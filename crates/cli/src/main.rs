@@ -102,6 +102,7 @@ fn main() {
                 match hasil_scan {
                     HasilScan::Complete(res) => {
                         model_hasil = Some(PohonSistemBerkas::baru(
+                            res.root_path.clone(),
                             res.gudang,
                             res.root,
                             res.errors,
@@ -110,6 +111,7 @@ fn main() {
                     HasilScan::Incomplete { result: res, reason } => {
                         println!("[!] Pemindaian tidak lengkap: {:?}", reason);
                         model_hasil = Some(PohonSistemBerkas::baru(
+                            res.root_path.clone(),
                             res.gudang,
                             res.root,
                             res.errors,

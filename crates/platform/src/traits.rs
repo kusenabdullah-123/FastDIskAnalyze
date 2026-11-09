@@ -114,6 +114,17 @@ pub enum FsError {
     IoError(String),
 }
 
+impl FsError {
+    pub fn to_scan_error(&self, path: PathBuf) -> ScanError {
+        match self {
+            Self::NotFound => ScanError::PathNotFound(path),
+            Self::PermissionDenied => ScanError::PermissionDenied(path),
+            Self::CrossDevice => ScanError::IoError("Operasi lintas perangkat sistem berkas".to_string()),
+            Self::IoError(s) => ScanError::IoError(s.clone()),
+        }
+    }
+}
+
 impl std::fmt::Display for FsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

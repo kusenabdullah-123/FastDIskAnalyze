@@ -1,14 +1,15 @@
 use crate::icons::{
     icon_colored, ICON_FILE, ICON_FOLDER, ICON_SORT_DEFAULT, ICON_SORT_DOWN, ICON_SORT_UP,
+    ICON_TRASH,
 };
 use crate::theme::{
-    header_sort_button, table_header_container, table_row_button, COLOR_FOLDER, COLOR_PRIMARY,
-    TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+    ghost_button, header_sort_button, table_header_container, table_row_button, COLOR_DANGER,
+    COLOR_FOLDER, COLOR_PRIMARY, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
 use crate::view_state::{SortColumn, ViewState};
 use crate::widgets::size_bar::{format_bytes, size_bar_widget};
 use fast_disk_analyze_core::{IdEntri, PohonSistemBerkas, SortKey};
-use iced::widget::{button, column, container, row, scrollable, text, Space};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, text, Space};
 use iced::{Element, Length};
 use std::sync::Arc;
 
@@ -19,6 +20,8 @@ pub fn virtual_table_widget<'a, Message: 'a + Clone + 'static>(
     on_navigate: impl Fn(IdEntri) -> Message + 'static + Copy,
     on_select: impl Fn(IdEntri) -> Message + 'static + Copy,
     on_scroll: impl Fn(scrollable::Viewport) -> Message + 'static + Copy,
+    on_delete_trash: impl Fn(IdEntri) -> Message + 'static + Copy,
+    on_right_click: impl Fn(IdEntri) -> Message + 'static + Copy,
 ) -> Element<'a, Message> {
     let current_dir = state.current_dir.unwrap_or(IdEntri(0));
 
@@ -26,7 +29,7 @@ pub fn virtual_table_widget<'a, Message: 'a + Clone + 'static>(
     let entries: Arc<[IdEntri]> = model.sorted(current_dir, state.sort_key);
     let total_count = entries.len();
 
-    // 1. Header 2 Kolom Bersih: NAMA dan UKURAN
+    // 1. Header: NAMA, UKURAN, dan Ruang Tombol Hapus
     let sort_icon_for = |col: SortColumn| match (col, state.sort_key) {
         (SortColumn::Nama, SortKey::NamaAZ) => icon_colored(ICON_SORT_UP, COLOR_PRIMARY).size(11),
         (SortColumn::Nama, SortKey::NamaZA) => icon_colored(ICON_SORT_DOWN, COLOR_PRIMARY).size(11),
@@ -52,7 +55,8 @@ pub fn virtual_table_widget<'a, Message: 'a + Clone + 'static>(
 
     let header_row = row![
         header_cell("NAMA", SortColumn::Nama, Length::Fill),
-        header_cell("UKURAN", SortColumn::Ukuran, Length::Fixed(240.0)),
+        header_cell("UKURAN", SortColumn::Ukuran, Length::Fixed(220.0)),
+        Space::with_width(Length::Fixed(52.0)), // Ruang untuk tombol hapus (28px) + jarak scrollbar (24px)
     ]
     .spacing(8)
     .align_y(iced::Alignment::Center);
@@ -107,33 +111,57 @@ pub fn virtual_table_widget<'a, Message: 'a + Clone + 'static>(
             text(size_str)
                 .size(12)
                 .color(TEXT_SECONDARY)
-                .width(Length::Fixed(90.0)),
+                .width(Length::Fixed(85.0)),
             container(size_bar_widget(pct))
-                .width(Length::Fixed(140.0)),
+                .width(Length::Fixed(125.0)),
         ]
         .spacing(8)
         .align_y(iced::Alignment::Center)
-        .width(Length::Fixed(240.0));
+        .width(Length::Fixed(218.0));
 
-        let row_content = row![
+        let main_click_area = row![
             name_col,
             size_col,
         ]
         .spacing(8)
-        .align_y(iced::Alignment::Center);
+        .align_y(iced::Alignment::Center)
+        .width(Length::Fill);
 
-        let mut row_btn = button(row_content)
+        let mut main_btn = button(main_click_area)
             .width(Length::Fill)
-            .padding([5, 10])
+            .padding([5, 8])
             .style(table_row_button(is_selected));
 
         if is_dir {
-            row_btn = row_btn.on_press(on_navigate(id));
+            main_btn = main_btn.on_press(on_navigate(id));
         } else {
-            row_btn = row_btn.on_press(on_select(id));
+            main_btn = main_btn.on_press(on_select(id));
         }
 
-        rows_col = rows_col.push(row_btn);
+        let main_area = mouse_area(main_btn).on_right_press(on_right_click(id));
+
+        // Tombol hapus di sebelah kanan kapasitas (default ke trash)
+        let trash_btn = button(
+            container(icon_colored(ICON_TRASH, COLOR_DANGER).size(13))
+                .align_x(iced::alignment::Horizontal::Center)
+                .align_y(iced::alignment::Vertical::Center),
+        )
+        .width(Length::Fixed(28.0))
+        .height(Length::Fixed(26.0))
+        .padding([4, 4])
+        .style(ghost_button)
+        .on_press(on_delete_trash(id));
+
+        let full_row = row![
+            main_area,
+            Space::with_width(Length::Fixed(4.0)),
+            trash_btn,
+            Space::with_width(Length::Fixed(20.0)), // Padding kanan agar TIDAK tertutup scrollbar vertikal
+        ]
+        .align_y(iced::Alignment::Center)
+        .width(Length::Fill);
+
+        rows_col = rows_col.push(full_row);
     }
 
     // Spacer Bawah
@@ -143,17 +171,15 @@ pub fn virtual_table_widget<'a, Message: 'a + Clone + 'static>(
     }
 
     let scroll = scrollable(rows_col)
-        .on_scroll(on_scroll)
-        .direction(scrollable::Direction::Vertical(scrollable::Scrollbar::default()))
+        .height(Length::Fill)
         .width(Length::Fill)
-        .height(Length::Fill);
+        .on_scroll(on_scroll);
 
     column![
         header,
         Space::with_height(Length::Fixed(4.0)),
         scroll,
     ]
-    .spacing(2)
     .width(Length::Fill)
     .height(Length::Fill)
     .into()

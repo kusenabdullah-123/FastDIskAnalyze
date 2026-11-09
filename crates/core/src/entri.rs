@@ -8,6 +8,7 @@ pub mod penanda {
     pub const TAUTAN_GANDA: u8 = 1 << 2; // hardlink kedua+; ukuran tidak dihitung ulang
     pub const TIDAK_DITELUSURI: u8 = 1 << 3; // direktori dilewati (mount lain / reparse / cap memori)
     pub const DIRINGKAS: u8 = 1 << 4; // anak tidak disimpan (mode Summarized)
+    pub const YATIM: u8 = 1 << 5; // entri telah dihapus / yatim setelah delta update
 }
 
 #[repr(C)]
@@ -45,6 +46,10 @@ impl RekamanEntri {
 
     pub fn adalah_berkas(&self) -> bool {
         self.jenis == JenisEntri::Berkas as u8
+    }
+
+    pub fn adalah_yatim(&self) -> bool {
+        self.penanda & penanda::YATIM != 0
     }
 }
 

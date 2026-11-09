@@ -4,6 +4,7 @@ use fast_disk_analyze_core::gudang::GudangEntri;
 use fast_disk_analyze_core::ids::{IdEntri, INDUK_AKAR};
 use fast_disk_analyze_core::model::PohonSistemBerkas;
 use fast_disk_analyze_core::view::SortKey;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 #[test]
@@ -44,7 +45,7 @@ fn test_benchmark_1000_render_sorted_100k_entri() {
         });
     }
 
-    let model = PohonSistemBerkas::baru(gudang, IdEntri(0), ErrorLog::new());
+    let model = PohonSistemBerkas::baru(PathBuf::from("/"), gudang, IdEntri(0), ErrorLog::new());
 
     // Panggilan pertama (cold sort O(K log K))
     let first_sort_start = Instant::now();
@@ -112,7 +113,7 @@ fn test_filter_zero_allocation_case_insensitive() {
         });
     }
 
-    let model = PohonSistemBerkas::baru(gudang, IdEntri(0), ErrorLog::new());
+    let model = PohonSistemBerkas::baru(PathBuf::from("/"), gudang, IdEntri(0), ErrorLog::new());
 
     // Cari ".png" (harus cocok dengan .PNG dan .png)
     let matched_png = model.filtered(IdEntri(0), ".png");
@@ -213,7 +214,7 @@ fn test_ancestor_chain_dan_depth() {
         _padding: 0,
     });
 
-    let model = PohonSistemBerkas::baru(gudang, IdEntri(0), ErrorLog::new());
+    let model = PohonSistemBerkas::baru(PathBuf::from("/"), gudang, IdEntri(0), ErrorLog::new());
 
     // Cek ancestor chain
     let chain = model.ancestor_chain(IdEntri(4));

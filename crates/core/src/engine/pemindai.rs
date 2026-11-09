@@ -281,6 +281,7 @@ impl Pemindai {
         let elapsed = start_time.elapsed();
 
         let hasil = HasilLengkap {
+            root_path: root_canonical,
             gudang,
             root: IdEntri(0),
             errors,

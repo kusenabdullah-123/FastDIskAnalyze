@@ -1,9 +1,10 @@
 use crate::icons::{
-    icon, icon_colored, ICON_ARROW_LEFT, ICON_BOLT, ICON_DATABASE, ICON_GLOBE, ICON_HDD, ICON_USB,
+    icon, icon_colored, ICON_ARROW_LEFT, ICON_BOLT, ICON_DATABASE, ICON_GLOBE, ICON_HDD,
+    ICON_REFRESH, ICON_TRASH, ICON_USB,
 };
 use crate::theme::{
-    chip_style, secondary_button, COLOR_CYAN, COLOR_PRIMARY, COLOR_SUCCESS, COLOR_WARNING,
-    TEXT_PRIMARY,
+    card_style, chip_style, danger_button, ghost_button, secondary_button, COLOR_CYAN,
+    COLOR_DANGER, COLOR_PRIMARY, COLOR_SUCCESS, COLOR_WARNING, TEXT_PRIMARY,
 };
 use crate::view_state::{SortColumn, ViewState};
 use crate::widgets::breadcrumb::breadcrumb_bar;
@@ -24,8 +25,12 @@ pub fn view_explorer<'a, Message: 'a + Clone + 'static>(
     on_select_node: impl Fn(IdEntri) -> Message + 'static + Copy,
     on_toggle_sort: impl Fn(SortColumn) -> Message + 'static + Copy,
     on_scroll_table: impl Fn(iced::widget::scrollable::Viewport) -> Message + 'static + Copy,
+    on_rescan_subtree: Message,
+    on_delete_trash: impl Fn(IdEntri) -> Message + 'static + Copy,
+    on_right_click: impl Fn(IdEntri) -> Message + 'static + Copy,
+    on_close_context_menu: Message,
 ) -> Element<'a, Message> {
-    // 1. Toolbar Atas Minimalis & Elegan
+    // 1. Toolbar Atas Minimalis (Hanya Ganti Drive, Badge Drive, dan Refresh)
     let back_btn = button(
         row![
             icon(ICON_ARROW_LEFT).size(12),
@@ -58,11 +63,24 @@ pub fn view_explorer<'a, Message: 'a + Clone + 'static>(
     .padding([5, 12])
     .style(chip_style);
 
+    let refresh_btn = button(
+        row![
+            icon(ICON_REFRESH).size(13),
+            Space::with_width(Length::Fixed(6.0)),
+            text("Refresh").size(12),
+        ]
+        .align_y(iced::Alignment::Center),
+    )
+    .padding([6, 12])
+    .style(ghost_button)
+    .on_press(on_rescan_subtree);
+
     let toolbar = row![
         back_btn,
         Space::with_width(Length::Fixed(8.0)),
         drive_badge,
         Space::with_width(Length::Fill),
+        refresh_btn,
     ]
     .align_y(iced::Alignment::Center);
 
@@ -74,7 +92,44 @@ pub fn view_explorer<'a, Message: 'a + Clone + 'static>(
         on_navigate_up,
     );
 
-    // 3. Tabel Virtual (2 Kolom: NAMA dan UKURAN)
+    // Context Action Banner (muncul saat baris di-klik kanan)
+    let maybe_context_banner: Option<Element<'a, Message>> = state.context_menu_target.map(|target_id| {
+        let nama = model.nama(target_id);
+        let is_dir = model.adalah_direktori(target_id);
+        let item_label = if is_dir { "Folder" } else { "Berkas" };
+
+        container(
+            row![
+                icon_colored(ICON_TRASH, COLOR_DANGER).size(13),
+                Space::with_width(Length::Fixed(8.0)),
+                text(format!("{item_label} \"{nama}\":")).size(12).color(TEXT_PRIMARY),
+                Space::with_width(Length::Fill),
+                button(text("Batal").size(11))
+                    .padding([4, 10])
+                    .style(ghost_button)
+                    .on_press(on_close_context_menu),
+                Space::with_width(Length::Fixed(6.0)),
+                button(
+                    row![
+                        icon(ICON_TRASH).size(11),
+                        Space::with_width(Length::Fixed(4.0)),
+                        text("Pindahkan ke Trash").size(11),
+                    ]
+                    .align_y(iced::Alignment::Center),
+                )
+                .padding([4, 12])
+                .style(danger_button)
+                .on_press(on_delete_trash(target_id)),
+            ]
+            .align_y(iced::Alignment::Center),
+        )
+        .padding([6, 12])
+        .style(card_style)
+        .width(Length::Fill)
+        .into()
+    });
+
+    // 3. Tabel Virtual (NAMA, UKURAN, dan tombol [ 🗑️ ] di sebelah kanan kapasitas)
     let table = virtual_table_widget(
         model,
         state,
@@ -82,6 +137,8 @@ pub fn view_explorer<'a, Message: 'a + Clone + 'static>(
         on_navigate,
         on_select_node,
         on_scroll_table,
+        on_delete_trash,
+        on_right_click,
     );
 
     // 4. Status Bar
@@ -92,15 +149,21 @@ pub fn view_explorer<'a, Message: 'a + Clone + 'static>(
         Some(drive.medium),
     );
 
-    column![
+    let mut layout = column![
         toolbar,
         breadcrumb,
-        table,
-        status,
     ]
-    .spacing(8)
-    .padding(14)
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
+    .spacing(8);
+
+    if let Some(banner) = maybe_context_banner {
+        layout = layout.push(banner);
+    }
+
+    layout = layout.push(table).push(status);
+
+    layout
+        .padding(14)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }

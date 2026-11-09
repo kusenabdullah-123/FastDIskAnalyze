@@ -1,4 +1,5 @@
 pub mod breadcrumb;
+pub mod dialog_hapus;
 pub mod layar_explorer;
 pub mod layar_loading;
 pub mod layar_pilih_drive;
@@ -9,6 +10,7 @@ pub mod table;
 pub mod toolbar;
 
 pub use breadcrumb::breadcrumb_bar;
+pub use dialog_hapus::view_dialog_hapus;
 pub use layar_explorer::view_explorer;
 pub use layar_loading::view_loading;
 pub use layar_pilih_drive::view_pilih_drive;

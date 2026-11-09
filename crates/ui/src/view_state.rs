@@ -19,6 +19,7 @@ pub struct ViewState {
     pub is_scanning: bool,
     pub scroll_offset_y: f32,
     pub viewport_height: f32,
+    pub context_menu_target: Option<IdEntri>,
 }
 
 impl ViewState {
@@ -35,6 +36,7 @@ impl ViewState {
             is_scanning: false,
             scroll_offset_y: 0.0,
             viewport_height: 600.0,
+            context_menu_target: None,
         }
     }
 
@@ -46,6 +48,7 @@ impl ViewState {
         }
         self.current_dir = Some(dir);
         self.selected_node = None;
+        self.context_menu_target = None;
         self.scroll_offset_y = 0.0;
     }
 
@@ -54,6 +57,7 @@ impl ViewState {
         if prev.is_some() {
             self.current_dir = prev;
             self.selected_node = None;
+            self.context_menu_target = None;
             self.scroll_offset_y = 0.0;
         }
         prev

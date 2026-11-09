@@ -70,6 +70,7 @@ pub enum HasilScan {
 
 #[derive(Clone, Debug)]
 pub struct HasilLengkap {
+    pub root_path: PathBuf,
     pub gudang: GudangEntri,
     pub root: IdEntri,
     pub errors: ErrorLog,

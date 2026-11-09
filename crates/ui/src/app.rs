@@ -1,17 +1,23 @@
 use crate::view_state::{SortColumn, ViewState};
-use crate::widgets::{view_explorer, view_loading, view_pilih_drive, view_scanning};
-use crossbeam_channel::Receiver;
-use fast_disk_analyze_core::engine::pengendali::{
-    AkurasiTautan, CapPolicy, DefaultPengendaliScan, HasilScan, PengendaliScan, PermintaanScan,
-    ProgressEvent,
+use crate::widgets::{
+    view_dialog_hapus, view_explorer, view_loading, view_pilih_drive, view_scanning,
 };
-use fast_disk_analyze_core::{IdEntri, PohonSistemBerkas, SizeMode};
-use fast_disk_analyze_platform::{default_probe, CancellationToken, InformasiDrive, MediumKind};
+use crossbeam_channel::Receiver;
+use fast_disk_analyze_core::engine::penghapus::{ModeHapus, Penghapus};
+use fast_disk_analyze_core::engine::pengendali::{
+    AkurasiTautan, CapPolicy, DefaultPengendaliScan, HasilLengkap, HasilScan, PengendaliScan,
+    PermintaanScan, ProgressEvent,
+};
+use fast_disk_analyze_core::view::SizeMode;
+use fast_disk_analyze_core::{IdEntri, PohonSistemBerkas};
+use fast_disk_analyze_platform::{
+    default_fs_ops, default_probe, CancellationToken, InformasiDrive, MediumKind,
+};
 use iced::{Element, Subscription, Task};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub enum LayarAplikasi {
     Loading,
     PilihDrive(Vec<InformasiDrive>),
@@ -50,6 +56,15 @@ pub enum Message {
     ToggleSizeMode,
     FilterChanged(String),
     ScrollTable(iced::widget::scrollable::Viewport),
+
+    // Fase 5: Rescan & Penghapusan ke Trash (M5)
+    RescanSubtree,
+    SubtreeScanComplete(IdEntri, Box<HasilLengkap>),
+    PromptDeleteToTrash(IdEntri),
+    ConfirmDeleteToTrash,
+    CancelDelete,
+    OpenContextMenu(IdEntri),
+    CloseContextMenu,
 }
 
 pub struct FastDiskApp {
@@ -59,6 +74,7 @@ pub struct FastDiskApp {
     pub model: Option<PohonSistemBerkas>,
     pub cancel_token: Option<CancellationToken>,
     pub scan_rx: Option<Arc<Receiver<ProgressEvent>>>,
+    pub confirm_delete_target: Option<IdEntri>,
 }
 
 impl FastDiskApp {
@@ -70,6 +86,7 @@ impl FastDiskApp {
             model: None,
             cancel_token: None,
             scan_rx: None,
+            confirm_delete_target: None,
         };
 
         // Deteksi perangkat penyimpanan di latar belakang saat aplikasi pertama kali dibuka
@@ -163,35 +180,48 @@ impl FastDiskApp {
                 let mut finished_data = None;
 
                 if let Some(rx) = &self.scan_rx {
-                    while let Ok(event) = rx.try_recv() {
-                        match event {
-                            ProgressEvent::Tick { items, bytes, elapsed_ms, .. } => {
-                                if let LayarAplikasi::Memindai { drive: _, items: cur_items, bytes: cur_bytes, elapsed_ms: cur_ms } = &mut self.layar {
-                                    *cur_items = items;
-                                    *cur_bytes = bytes;
-                                    *cur_ms = elapsed_ms;
+                    while let Ok(evt) = rx.try_recv() {
+                        match evt {
+                            ProgressEvent::Tick {
+                                items: it,
+                                bytes: by,
+                                elapsed_ms: el,
+                                ..
+                            } => {
+                                if let LayarAplikasi::Memindai {
+                                    items,
+                                    bytes,
+                                    elapsed_ms,
+                                    ..
+                                } = &mut self.layar
+                                {
+                                    *items = it;
+                                    *bytes = by;
+                                    *elapsed_ms = el;
                                 }
                             }
                             ProgressEvent::Finished(hasil) => {
-                                let lengkap = match hasil {
-                                    HasilScan::Complete(l) => l,
-                                    HasilScan::Incomplete { result, .. } => result,
-                                };
-                                finished_data = Some(lengkap);
+                                match hasil {
+                                    HasilScan::Complete(res) => {
+                                        finished_data = Some(res);
+                                    }
+                                    HasilScan::Incomplete { result, .. } => {
+                                        finished_data = Some(result);
+                                    }
+                                }
                                 break;
                             }
                             ProgressEvent::Cancelled { .. } => {
+                                self.layar = LayarAplikasi::PilihDrive(self.known_drives.clone());
                                 self.scan_rx = None;
                                 self.cancel_token = None;
-                                self.layar = LayarAplikasi::PilihDrive(self.known_drives.clone());
-                                break;
+                                return Task::none();
                             }
-                            ProgressEvent::Failed { error } => {
-                                eprintln!("Peringatan pemindaian gagal: {:?}", error);
+                            ProgressEvent::Failed { error: _ } => {
+                                self.layar = LayarAplikasi::PilihDrive(self.known_drives.clone());
                                 self.scan_rx = None;
                                 self.cancel_token = None;
-                                self.layar = LayarAplikasi::PilihDrive(self.known_drives.clone());
-                                break;
+                                return Task::none();
                             }
                             _ => {}
                         }
@@ -213,14 +243,16 @@ impl FastDiskApp {
                         }
                     };
 
-                    let pohon = PohonSistemBerkas::baru(lengkap.gudang, lengkap.root, lengkap.errors);
+                    let pohon = PohonSistemBerkas::baru(lengkap.root_path.clone(), lengkap.gudang, lengkap.root, lengkap.errors);
                     self.state.current_dir = Some(IdEntri(0));
                     self.state.nav_stack.clear();
                     self.state.selected_node = None;
+                    self.state.context_menu_target = None;
                     self.state.scroll_offset_y = 0.0;
                     self.model = Some(pohon);
                     self.scan_rx = None;
                     self.cancel_token = None;
+                    self.confirm_delete_target = None;
                     self.layar = LayarAplikasi::Explorer { drive };
                 }
 
@@ -228,6 +260,8 @@ impl FastDiskApp {
             }
             Message::BackToDriveList => {
                 self.model = None;
+                self.state.context_menu_target = None;
+                self.confirm_delete_target = None;
                 self.layar = LayarAplikasi::PilihDrive(self.known_drives.clone());
                 Task::none()
             }
@@ -266,6 +300,96 @@ impl FastDiskApp {
                 self.state.viewport_height = height;
                 Task::none()
             }
+            Message::RescanSubtree => {
+                if let (Some(model), Some(curr_dir)) = (&self.model, self.state.current_dir) {
+                    let path = model.fs_path_verbatim(curr_dir).0;
+                    let (tx, rx) = crossbeam_channel::bounded(64);
+                    let token = CancellationToken::new();
+                    let (async_tx, async_rx) = iced::futures::channel::oneshot::channel();
+
+                    std::thread::spawn(move || {
+                        let _ = fast_disk_analyze_core::engine::pemindai::Pemindai::scan_parallel(
+                            &path,
+                            MediumKind::Unknown,
+                            4,
+                            &token,
+                            Some(tx.clone()),
+                        );
+                        while let Ok(evt) = rx.recv() {
+                            if let ProgressEvent::Finished(hasil) = evt {
+                                match hasil {
+                                    HasilScan::Complete(res) => {
+                                        let _ = async_tx.send(Some((curr_dir, res)));
+                                        return;
+                                    }
+                                    HasilScan::Incomplete { result, .. } => {
+                                        let _ = async_tx.send(Some((curr_dir, result)));
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                        let _ = async_tx.send(None);
+                    });
+
+                    Task::future(async move {
+                        match async_rx.await {
+                            Ok(Some((id, lengkap))) => {
+                                Message::SubtreeScanComplete(id, Box::new(lengkap))
+                            }
+                            _ => Message::DialogCancelled,
+                        }
+                    })
+                } else {
+                    Task::none()
+                }
+            }
+            Message::SubtreeScanComplete(target_id, lengkap) => {
+                if let Some(model) = &mut self.model {
+                    model.terapkan_subtree(target_id, lengkap.gudang, lengkap.root);
+                }
+                Task::none()
+            }
+            Message::OpenContextMenu(id) => {
+                self.state.context_menu_target = Some(id);
+                Task::none()
+            }
+            Message::CloseContextMenu => {
+                self.state.context_menu_target = None;
+                Task::none()
+            }
+            Message::PromptDeleteToTrash(id) => {
+                self.state.context_menu_target = None;
+                self.confirm_delete_target = Some(id);
+                Task::none()
+            }
+            Message::CancelDelete => {
+                self.confirm_delete_target = None;
+                Task::none()
+            }
+            Message::ConfirmDeleteToTrash => {
+                if let Some(target_id) = self.confirm_delete_target.take() {
+                    if let Some(model) = &mut self.model {
+                        let ops = default_fs_ops();
+                        let hasil = Penghapus::eksekusi(
+                            model,
+                            &[target_id],
+                            ModeHapus::Sampah,
+                            ops.as_ref(),
+                        );
+                        model.terapkan_penghapusan(&hasil);
+
+                        if self.state.selected_node == Some(target_id) {
+                            self.state.selected_node = None;
+                        }
+
+                        if self.state.current_dir == Some(target_id) {
+                            self.state.navigate_up();
+                        }
+                    }
+                }
+                Task::none()
+            }
         }
     }
 
@@ -298,7 +422,7 @@ impl FastDiskApp {
             ),
             LayarAplikasi::Explorer { drive } => {
                 if let Some(model) = &self.model {
-                    view_explorer(
+                    let explorer_view = view_explorer(
                         drive,
                         model,
                         &self.state,
@@ -308,7 +432,26 @@ impl FastDiskApp {
                         Message::SelectNode,
                         Message::ToggleSort,
                         Message::ScrollTable,
-                    )
+                        Message::RescanSubtree,
+                        Message::PromptDeleteToTrash,
+                        Message::OpenContextMenu,
+                        Message::CloseContextMenu,
+                    );
+
+                    if let Some(target_id) = self.confirm_delete_target {
+                        iced::widget::stack![
+                            explorer_view,
+                            view_dialog_hapus(
+                                model,
+                                target_id,
+                                Message::ConfirmDeleteToTrash,
+                                Message::CancelDelete,
+                            ),
+                        ]
+                        .into()
+                    } else {
+                        explorer_view
+                    }
                 } else {
                     view_loading()
                 }

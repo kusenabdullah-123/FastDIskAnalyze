@@ -249,19 +249,17 @@ impl StorageProbe for LinuxStorageProbe {
         if let Ok(home_str) = std::env::var("HOME") {
             let home_path = PathBuf::from(&home_str);
             if home_path.exists() {
-                if let Some((total, avail)) = query_statvfs(&home_path) {
-                    let medium = self.probe(&home_path);
-                    drives.push(InformasiDrive {
-                        id: format!("user-home:{}", home_str),
-                        mount_point: home_path.clone(),
-                        label: "Home Pengguna (~/)".to_string(),
-                        fs_type: "home".to_string(),
-                        total_bytes: total,
-                        available_bytes: avail,
-                        medium,
-                    });
-                    seen_paths.insert(home_path);
-                }
+                let medium = self.probe(&home_path);
+                drives.push(InformasiDrive {
+                    id: format!("user-home:{}", home_str),
+                    mount_point: home_path.clone(),
+                    label: "Home Folder".to_string(),
+                    fs_type: "home".to_string(),
+                    total_bytes: 0,
+                    available_bytes: 0,
+                    medium,
+                });
+                seen_paths.insert(home_path);
             }
         }
 
@@ -269,10 +267,16 @@ impl StorageProbe for LinuxStorageProbe {
         let root_path = PathBuf::from("/");
         if let Some((total, avail)) = query_statvfs(&root_path) {
             let medium = self.probe(&root_path);
+            let hostname = std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "Computer".to_string());
+
             drives.push(InformasiDrive {
                 id: "/dev/root".to_string(),
                 mount_point: root_path.clone(),
-                label: "Root Sistem (/)".to_string(),
+                label: hostname,
                 fs_type: "rootfs".to_string(),
                 total_bytes: total,
                 available_bytes: avail,
@@ -435,10 +439,10 @@ impl StorageProbe for LinuxStorageProbe {
             }
         }
 
-        // Urutkan prioritas: Home Pengguna (~/) -> Root Sistem (/) -> /home -> Direktori Kerja -> Mount Lainnya
+        // Urutkan prioritas: Home Folder -> Root Sistem (/) -> /home -> Direktori Kerja -> Mount Lainnya
         drives.sort_by(|a, b| {
             let priority = |d: &InformasiDrive| -> u8 {
-                if d.label.starts_with("Home Pengguna") {
+                if d.label.starts_with("Home") || d.id.starts_with("user-home") {
                     0
                 } else if d.mount_point == Path::new("/") {
                     1
