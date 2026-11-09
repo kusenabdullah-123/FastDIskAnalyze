@@ -38,7 +38,7 @@ impl PohonSistemBerkas {
         }
     }
 
-    /// Mendapatkan slice IdEntri untuk anak-anak direktori.
+    /// Mendapatkan slice IdEntri untuk anak-anak direktori, O(K).
     pub fn children_ids(&self, id: IdEntri) -> Vec<IdEntri> {
         let entri = self.gudang.ambil(id);
         (entri.anak_awal..entri.anak_awal + entri.jumlah_anak)
@@ -46,6 +46,7 @@ impl PohonSistemBerkas {
             .collect()
     }
 
+    /// Mengambil daftar anak yang diurutkan dengan dukungan cache O(1) pada cache-hit.
     pub fn sorted(&mut self, id: IdEntri, key: SortKey) -> Arc<[IdEntri]> {
         if let Some(cached) = self.view_cache.sort_cache.get(&(id, key)) {
             return cached.clone();
@@ -88,13 +89,21 @@ impl PohonSistemBerkas {
                     eb.jumlah_anak.cmp(&ea.jumlah_anak)
                 });
             }
+            SortKey::JumlahAnakMenaik => {
+                ids.sort_by(|&a, &b| {
+                    let ea = self.gudang.ambil(a);
+                    let eb = self.gudang.ambil(b);
+                    ea.jumlah_anak.cmp(&eb.jumlah_anak)
+                });
+            }
         }
 
         let arc: Arc<[IdEntri]> = ids.into();
-        self.view_cache.sort_cache.insert((id, key), arc.clone());
+        self.view_cache.simpan_sort(id, key, arc.clone());
         arc
     }
 
+    /// Pencarian substring case-insensitive langsung pada buffer byte mentah (zero heap allocation per berkas).
     pub fn filtered(&mut self, id: IdEntri, q: &str) -> Arc<[IdEntri]> {
         let cache_key = (id, q.to_string());
         if let Some(cached) = self.view_cache.filter_cache.get(&cache_key) {
@@ -102,26 +111,67 @@ impl PohonSistemBerkas {
         }
 
         let q_bytes = q.as_bytes();
-        let q_lower: Vec<u8> = q_bytes.iter().map(|b| b.to_ascii_lowercase()).collect();
-
         let ids = self.children_ids(id);
+
         let hasil: Vec<IdEntri> = ids
             .into_iter()
             .filter(|&child_id| {
-                let nama_bytes = self.gudang.nama.ambil_nama(IdNama(self.gudang.ambil(child_id).id_nama));
-                if q_lower.is_empty() {
+                if q_bytes.is_empty() {
                     return true;
                 }
-                // Case-insensitive ASCII substring search tanpa alokasi String
-                nama_bytes
-                    .windows(q_lower.len())
-                    .any(|w| w.iter().map(|b| b.to_ascii_lowercase()).eq(q_lower.iter().copied()))
+                let nama_bytes = self.gudang.nama.ambil_nama(IdNama(self.gudang.ambil(child_id).id_nama));
+                if nama_bytes.len() < q_bytes.len() {
+                    return false;
+                }
+                // Case-insensitive byte matching tanpa alokasi String
+                nama_bytes.windows(q_bytes.len()).any(|w| {
+                    w.iter().zip(q_bytes.iter()).all(|(&b, &q)| {
+                        b.to_ascii_lowercase() == q.to_ascii_lowercase()
+                    })
+                })
             })
             .collect();
 
         let arc: Arc<[IdEntri]> = hasil.into();
         self.view_cache.filter_cache.put(cache_key, arc.clone());
         arc
+    }
+
+    /// Rantai leluhur dari Root hingga node target (untuk breadcrumb navigation di GUI).
+    pub fn ancestor_chain(&self, id: IdEntri) -> Vec<IdEntri> {
+        let mut chain = Vec::new();
+        let mut curr = id.0;
+        while curr != INDUK_AKAR && (curr as usize) < self.gudang.jumlah() {
+            chain.push(IdEntri(curr));
+            curr = self.gudang.ambil(IdEntri(curr)).induk;
+        }
+        chain.reverse();
+        chain
+    }
+
+    /// Kedalaman direktori dari Root (Root = 0).
+    pub fn depth(&self, id: IdEntri) -> usize {
+        let mut d = 0;
+        let mut curr = self.gudang.ambil(id).induk;
+        while curr != INDUK_AKAR && (curr as usize) < self.gudang.jumlah() {
+            d += 1;
+            curr = self.gudang.ambil(IdEntri(curr)).induk;
+        }
+        d
+    }
+
+    /// Menghitung persentase ukuran disk anak terhadap induknya dalam O(1).
+    pub fn size_percentage(&self, child_id: IdEntri) -> f64 {
+        let child = self.gudang.ambil(child_id);
+        if child.induk == INDUK_AKAR || (child.induk as usize) >= self.gudang.jumlah() {
+            return 100.0;
+        }
+        let parent = self.gudang.ambil(IdEntri(child.induk));
+        if parent.ukuran_blok > 0 {
+            (child.ukuran_blok as f64 / parent.ukuran_blok as f64) * 100.0
+        } else {
+            0.0
+        }
     }
 
     pub fn nama(&self, id: IdEntri) -> Cow<'_, str> {
@@ -196,5 +246,9 @@ impl PohonSistemBerkas {
     pub fn invalidasi_cache(&mut self) {
         self.view_cache.invalidasi_semua();
     }
-}
 
+    pub fn invalidasi_rantai_leluhur(&mut self, id: IdEntri) {
+        let chain = self.ancestor_chain(id);
+        self.view_cache.invalidasi_banyak(&chain);
+    }
+}
