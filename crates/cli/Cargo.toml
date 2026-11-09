@@ -1,0 +1,11 @@
+[package]
+name = "fast-disk-analyze-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+fast-disk-analyze-core = { path = "../core" }
+fast-disk-analyze-platform = { path = "../platform" }
+

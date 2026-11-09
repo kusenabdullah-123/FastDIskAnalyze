@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/platform",
+    "crates/ui",
+    "crates/cli",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["kusena"]
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+bytemuck = { version = "1.21", features = ["derive"] }
+hashbrown = "0.15"
+rustc-hash = "2.1"
+crossbeam-channel = "0.5"
+lru = "0.13"
+libc = "0.2"
+windows-sys = "0.59"
+

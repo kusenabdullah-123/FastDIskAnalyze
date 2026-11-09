@@ -1,0 +1,11 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+fast-disk-analyze-core = { path = "../crates/core" }
+fast-disk-analyze-platform = { path = "../crates/platform" }
+
