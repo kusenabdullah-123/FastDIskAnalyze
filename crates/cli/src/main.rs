@@ -1,6 +1,10 @@
-use fast_disk_analyze_platform::{
-    default_dir_iterator, default_probe, CancellationToken, JenisEntri,
+use fast_disk_analyze_core::engine::{
+    AkurasiTautan, CapPolicy, DefaultPengendaliScan, HasilScan, PengendaliScan,
+    PenjadwalScan, PermintaanScan, ProgressEvent,
 };
+use fast_disk_analyze_core::model::PohonSistemBerkas;
+use fast_disk_analyze_core::view::{SizeMode, SortKey};
+use fast_disk_analyze_platform::{default_probe, JenisEntri};
 use std::env;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -33,91 +37,127 @@ fn main() {
     };
 
     println!("============================================================");
-    println!("Fast Disk Analyze — CLI Headless Scanner (Milestone M1)");
+    println!("Fast Disk Analyze — CLI Parallel Scanner (Milestone M2)");
     println!("Target Path: {}", target_path.display());
 
-    // 1. Probe tipe penyimpanan
+    // 1. Hardware Probe
     let probe = default_probe();
     let medium = probe.probe(&target_path);
     println!("Tipe Media : {:?}", medium);
 
-    let policy = fast_disk_analyze_core::engine::PenjadwalScan::policy(medium);
+    let policy = PenjadwalScan::policy(medium);
     println!(
-        "Kebijakan  : {} worker threads, kedalaman antrean: {}",
+        "Kebijakan  : {} worker threads (work-stealing), antrean: {}",
         policy.threads, policy.queue_depth
     );
     println!("------------------------------------------------------------");
 
-    // 2. Siapkan CancellationToken dan handler Ctrl+C
-    let token = CancellationToken::new();
-    let token_clone = token.clone();
-    let _ = ctrlc_handler(move || {
-        println!("\n[!] Menerima sinyal pembatalan (Ctrl+C)... Menghentikan I/O...");
-        token_clone.cancel();
-    });
-
-    // 3. Jalankan pemindaian direktori nyata via HAL
-    let mut iterator = default_dir_iterator();
-    let mut total_entri: u64 = 0;
-    let mut total_berkas: u64 = 0;
-    let mut total_direktori: u64 = 0;
-    let mut total_tautan: u64 = 0;
-    let mut total_lainnya: u64 = 0;
-    let mut total_apparent_bytes: u64 = 0;
-    let mut total_block_bytes: u64 = 0;
-    let mut total_hardlinks: u64 = 0;
-    let mut total_errors: u64 = 0;
+    // 2. Siapkan PengendaliScan & Permintaan
+    let mut controller = DefaultPengendaliScan::new();
+    let req = PermintaanScan {
+        root_path: target_path.clone(),
+        medium,
+        mode: SizeMode::UkuranBlok,
+        cap_policy: CapPolicy::None,
+        akurasi_tautan: AkurasiTautan::Cepat,
+        lintas_mount: false,
+    };
 
     let start = Instant::now();
-    println!("Memulai pemindaian via getdents64 + statx...");
+    println!("Memulai pemindaian paralel multi-worker...");
 
-    let res = iterator.walk(&target_path, &token, &mut |raw| {
-        total_entri += 1;
-        total_apparent_bytes += raw.ukuran_asli;
-        total_block_bytes += raw.ukuran_blok;
+    let rx = controller.mulai(req);
 
-        match raw.jenis {
+    let mut model_hasil: Option<PohonSistemBerkas> = None;
+    let mut scan_selesai = false;
+
+    while let Ok(event) = rx.recv() {
+        match event {
+            ProgressEvent::Started { .. } => {}
+            ProgressEvent::Tick {
+                items,
+                bytes,
+                elapsed_ms,
+                ..
+            } => {
+                let elapsed_sec = elapsed_ms as f64 / 1000.0;
+                let rate = if elapsed_sec > 0.0 {
+                    items as f64 / elapsed_sec
+                } else {
+                    0.0
+                };
+                eprint!(
+                    "\rProgres: {} entri ({:.0} entri/detik, {})...",
+                    items,
+                    rate,
+                    format_bytes(bytes)
+                );
+            }
+            ProgressEvent::MemoryPressure { used_nodes, cap } => {
+                eprintln!("\n[!] Tekanan memori: {}/{} entri", used_nodes, cap);
+            }
+            ProgressEvent::Finished(hasil_scan) => {
+                eprintln!(); // newline setelah progres
+                scan_selesai = true;
+                match hasil_scan {
+                    HasilScan::Complete(res) => {
+                        model_hasil = Some(PohonSistemBerkas::baru(
+                            res.gudang,
+                            res.root,
+                            res.errors,
+                        ));
+                    }
+                    HasilScan::Incomplete { result: res, reason } => {
+                        println!("[!] Pemindaian tidak lengkap: {:?}", reason);
+                        model_hasil = Some(PohonSistemBerkas::baru(
+                            res.gudang,
+                            res.root,
+                            res.errors,
+                        ));
+                    }
+                }
+                break;
+            }
+            ProgressEvent::Cancelled { items } => {
+                eprintln!();
+                println!("[!] Pemindaian dibatalkan setelah {} entri.", items);
+                return;
+            }
+            ProgressEvent::Failed { error } => {
+                eprintln!();
+                println!("[X] Pemindaian gagal: {error}");
+                return;
+            }
+        }
+    }
+
+    let elapsed = start.elapsed();
+    println!("------------------------------------------------------------");
+
+    if !scan_selesai || model_hasil.is_none() {
+        println!("Pemindaian berhenti sebelum selesai.");
+        return;
+    }
+
+    let mut model = model_hasil.unwrap();
+    let total_entri = model.gudang.jumlah();
+    let root_node = *model.gudang.ambil(model.root);
+
+    let mut total_berkas = 0;
+    let mut total_direktori = 0;
+    let mut total_tautan = 0;
+    let mut total_lainnya = 0;
+    let mut total_hardlinks = 0;
+
+    for entri in &model.gudang.daftar_entri {
+        match entri.jenis() {
             JenisEntri::Berkas => total_berkas += 1,
             JenisEntri::Direktori => total_direktori += 1,
             JenisEntri::Tautan => total_tautan += 1,
             JenisEntri::Lainnya => total_lainnya += 1,
         }
-
-        if raw.jumlah_tautan > 1 {
+        if entri.jumlah_tautan > 1 {
             total_hardlinks += 1;
-        }
-
-        if raw.error.is_some() {
-            total_errors += 1;
-        }
-
-        // Cetak progres per 50.000 entri
-        if total_entri % 50_000 == 0 {
-            let elapsed = start.elapsed().as_secs_f64();
-            let rate = if elapsed > 0.0 {
-                total_entri as f64 / elapsed
-            } else {
-                0.0
-            };
-            eprint!(
-                "\rProgres: {} entri ({:.0} entri/detik, {})...",
-                total_entri,
-                rate,
-                format_bytes(total_apparent_bytes)
-            );
-        }
-    });
-
-    let elapsed = start.elapsed();
-    eprintln!(); // newline setelah progres
-    println!("------------------------------------------------------------");
-
-    match res {
-        Ok(()) => {
-            println!("Status     : SELESAI");
-        }
-        Err(e) => {
-            println!("Status     : BERHENTI ({e})");
         }
     }
 
@@ -128,24 +168,71 @@ fn main() {
         0.0
     };
     let throughput_mb = if elapsed_sec > 0.0 {
-        (total_apparent_bytes as f64 / (1024.0 * 1024.0)) / elapsed_sec
+        (root_node.ukuran_asli as f64 / (1024.0 * 1024.0)) / elapsed_sec
     } else {
         0.0
     };
 
-    println!("Waktu      : {:.3?} ({:.0} entri/detik, {:.1} MB/detik)", elapsed, throughput_entri, throughput_mb);
+    println!("Status     : SELESAI");
+    println!(
+        "Waktu      : {:.3?} ({:.0} entri/detik, {:.1} MB/detik)",
+        elapsed, throughput_entri, throughput_mb
+    );
     println!("Total Item : {} entri", total_entri);
     println!(" - Berkas    : {}", total_berkas);
     println!(" - Direktori : {}", total_direktori);
     println!(" - Tautan    : {}", total_tautan);
     println!(" - Lainnya   : {}", total_lainnya);
     println!(" - Hardlinks : {}", total_hardlinks);
-    println!(" - Error/Skip: {}", total_errors);
-    println!("Ukuran Asli: {} ({} bytes)", format_bytes(total_apparent_bytes), total_apparent_bytes);
-    println!("Ukuran Blok: {} ({} bytes)", format_bytes(total_block_bytes), total_block_bytes);
-    println!("============================================================");
-}
+    println!(" - Error     : {}", model.errors.jumlah());
+    println!(
+        "Ukuran Asli: {} ({} bytes)",
+        format_bytes(root_node.ukuran_asli),
+        root_node.ukuran_asli
+    );
+    println!(
+        "Ukuran Blok: {} ({} bytes)",
+        format_bytes(root_node.ukuran_blok),
+        root_node.ukuran_blok
+    );
 
-fn ctrlc_handler<F: Fn() + Send + Sync + 'static>(_handler: F) -> Result<(), ()> {
-    Ok(())
+    println!("------------------------------------------------------------");
+    println!("TOP DIREKTORI / BERKAS TERBESAR:");
+    println!(
+        "{:<4} {:<6} {:<12} {:<12} {:>6}  {}",
+        "No", "Tipe", "Ukuran Asli", "Ukuran Blok", "% Disk", "Nama"
+    );
+    println!("{:-<60}", "");
+
+    let sorted_children = model.sorted(model.root, SortKey::UkuranMenurun);
+    let top_limit = sorted_children.len().min(15);
+
+    for (i, &child_id) in sorted_children[..top_limit].iter().enumerate() {
+        let child = model.gudang.ambil(child_id);
+        let nama = model.nama(child_id);
+        let tipe = match child.jenis() {
+            JenisEntri::Direktori => "[DIR]",
+            JenisEntri::Berkas => "[FILE]",
+            JenisEntri::Tautan => "[LINK]",
+            JenisEntri::Lainnya => "[ETC]",
+        };
+
+        let pct = if root_node.ukuran_blok > 0 {
+            (child.ukuran_blok as f64 / root_node.ukuran_blok as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        println!(
+            "{:<4} {:<6} {:<12} {:<12} {:>5.1}%  {}",
+            i + 1,
+            tipe,
+            format_bytes(child.ukuran_asli),
+            format_bytes(child.ukuran_blok),
+            pct,
+            nama
+        );
+    }
+
+    println!("============================================================");
 }

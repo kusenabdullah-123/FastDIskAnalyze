@@ -111,6 +111,127 @@ impl Default for WindowsDirIterator {
 }
 
 impl DirIterator for WindowsDirIterator {
+    fn read_dir(
+        &mut self,
+        dir: &Path,
+        token: &CancellationToken,
+        emit: &mut dyn FnMut(RawEntry<'_>),
+    ) -> Result<(), ScanError> {
+        let dir_handle = match Self::open_dir_handle(dir) {
+            Ok(h) => h,
+            Err(_) => return Ok(()),
+        };
+
+        let volume_serial = Self::get_volume_serial(dir_handle);
+        let mut is_restart = true;
+        let mut checked_counter: u32 = 0;
+
+        loop {
+            checked_counter += 1;
+            if checked_counter & 511 == 0 {
+                token.check()?;
+            }
+
+            let info_class = if is_restart {
+                FileIdBothDirectoryRestartInfo
+            } else {
+                FileIdBothDirectoryInfo
+            };
+
+            let success = unsafe {
+                GetFileInformationByHandleEx(
+                    dir_handle,
+                    info_class,
+                    self.buffer.as_mut_ptr() as *mut _,
+                    self.buffer.len() as u32,
+                )
+            };
+
+            if success == 0 {
+                let err = unsafe { GetLastError() };
+                if err == ERROR_NO_MORE_FILES {
+                    break;
+                }
+                break;
+            }
+
+            is_restart = false;
+            let mut offset = 0;
+
+            loop {
+                let entry = unsafe {
+                    &*(self.buffer.as_ptr().add(offset) as *const FILE_ID_BOTH_DIR_INFO)
+                };
+
+                let name_len_u16 = (entry.FileNameLength / 2) as usize;
+                let name_u16_slice = unsafe {
+                    std::slice::from_raw_parts(entry.FileName.as_ptr(), name_len_u16)
+                };
+
+                let is_dot = name_u16_slice == [b'.' as u16];
+                let is_dotdot = name_u16_slice == [b'.' as u16, b'.' as u16];
+
+                if !is_dot && !is_dotdot {
+                    let name_string = String::from_utf16_lossy(name_u16_slice);
+                    let name_bytes = name_string.as_bytes();
+
+                    let is_reparse = (entry.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+                    let is_dir = (entry.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+
+                    let jenis = if is_reparse {
+                        JenisEntri::Tautan
+                    } else if is_dir {
+                        JenisEntri::Direktori
+                    } else {
+                        JenisEntri::Berkas
+                    };
+
+                    let apparent_size = if entry.EndOfFile >= 0 {
+                        entry.EndOfFile as u64
+                    } else {
+                        0
+                    };
+
+                    let block_size = if entry.AllocationSize >= 0 {
+                        entry.AllocationSize as u64
+                    } else {
+                        0
+                    };
+
+                    let identitas = Some(IdentitasBerkas {
+                        volume: volume_serial,
+                        berkas: entry.FileId as u128,
+                    });
+
+                    emit(RawEntry {
+                        induk: 0,
+                        nama: name_bytes,
+                        jenis,
+                        ukuran_asli: apparent_size,
+                        ukuran_blok: block_size,
+                        jumlah_tautan: 1,
+                        identitas,
+                        error: None,
+                    });
+                }
+
+                if entry.NextEntryOffset == 0 {
+                    break;
+                }
+                offset += entry.NextEntryOffset as usize;
+                if offset >= self.buffer.len() {
+                    break;
+                }
+            }
+        }
+
+        unsafe {
+            CloseHandle(dir_handle);
+        }
+
+        Ok(())
+    }
+
     fn walk(
         &mut self,
         root: &Path,
@@ -152,7 +273,6 @@ impl DirIterator for WindowsDirIterator {
             None
         };
 
-        // 1. Emit entri root (id = 0, induk = u32::MAX)
         emit(RawEntry {
             induk: u32::MAX,
             nama: root_name_bytes,
@@ -171,134 +291,34 @@ impl DirIterator for WindowsDirIterator {
             path: root_canonical,
         });
 
-        let mut checked_counter: u32 = 0;
-
         while let Some(current_dir) = pending_dirs.pop_front() {
             token.check()?;
 
-            let dir_handle = match Self::open_dir_handle(&current_dir.path) {
-                Ok(h) => h,
-                Err(_) => continue,
-            };
+            let mut sub_dirs = Vec::new();
+            let parent_id = current_dir.id;
 
-            let mut is_restart = true;
+            self.read_dir(&current_dir.path, token, &mut |mut raw| {
+                let entry_id = next_id;
+                next_id += 1;
+                raw.induk = parent_id;
 
-            loop {
-                checked_counter += 1;
-                if checked_counter & 511 == 0 {
-                    token.check()?;
+                let is_dir = raw.jenis == JenisEntri::Direktori;
+                let name_string = String::from_utf8_lossy(raw.nama).to_string();
+
+                emit(raw);
+
+                if is_dir {
+                    let mut child_path = current_dir.path.clone();
+                    child_path.push(name_string);
+                    sub_dirs.push(PendingDir {
+                        id: entry_id,
+                        path: child_path,
+                    });
                 }
+            })?;
 
-                let info_class = if is_restart {
-                    FileIdBothDirectoryRestartInfo
-                } else {
-                    FileIdBothDirectoryInfo
-                };
-
-                let success = unsafe {
-                    GetFileInformationByHandleEx(
-                        dir_handle,
-                        info_class,
-                        self.buffer.as_mut_ptr() as *mut _,
-                        self.buffer.len() as u32,
-                    )
-                };
-
-                if success == 0 {
-                    let err = unsafe { GetLastError() };
-                    if err == ERROR_NO_MORE_FILES {
-                        break;
-                    }
-                    // Error membaca isi direktori
-                    break;
-                }
-
-                is_restart = false;
-                let mut offset = 0;
-
-                loop {
-                    let entry = unsafe {
-                        &*(self.buffer.as_ptr().add(offset) as *const FILE_ID_BOTH_DIR_INFO)
-                    };
-
-                    let name_len_u16 = (entry.FileNameLength / 2) as usize;
-                    let name_u16_slice = unsafe {
-                        std::slice::from_raw_parts(entry.FileName.as_ptr(), name_len_u16)
-                    };
-
-                    // Lewati entri "." dan ".."
-                    let is_dot = name_u16_slice == [b'.' as u16];
-                    let is_dotdot = name_u16_slice == [b'.' as u16, b'.' as u16];
-
-                    if !is_dot && !is_dotdot {
-                        let entry_id = next_id;
-                        next_id += 1;
-
-                        let name_string = String::from_utf16_lossy(name_u16_slice);
-                        let name_bytes = name_string.as_bytes();
-
-                        let is_reparse = (entry.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
-                        let is_dir = (entry.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-
-                        let jenis = if is_reparse {
-                            JenisEntri::Tautan // Junction / Symlink / OneDrive cloud placeholder
-                        } else if is_dir {
-                            JenisEntri::Direktori
-                        } else {
-                            JenisEntri::Berkas
-                        };
-
-                        let apparent_size = if entry.EndOfFile >= 0 {
-                            entry.EndOfFile as u64
-                        } else {
-                            0
-                        };
-
-                        let block_size = if entry.AllocationSize >= 0 {
-                            entry.AllocationSize as u64
-                        } else {
-                            0
-                        };
-
-                        let identitas = Some(IdentitasBerkas {
-                            volume: root_volume,
-                            berkas: entry.FileId as u128,
-                        });
-
-                        emit(RawEntry {
-                            induk: current_dir.id,
-                            nama: name_bytes,
-                            jenis,
-                            ukuran_asli: apparent_size,
-                            ukuran_blok: block_size,
-                            jumlah_tautan: 1,
-                            identitas,
-                            error: None,
-                        });
-
-                        // Masukkan ke antrean jika direktori murni (bukan reparse point / junction)
-                        if jenis == JenisEntri::Direktori {
-                            let mut child_path = current_dir.path.clone();
-                            child_path.push(&name_string);
-                            pending_dirs.push_back(PendingDir {
-                                id: entry_id,
-                                path: child_path,
-                            });
-                        }
-                    }
-
-                    if entry.NextEntryOffset == 0 {
-                        break;
-                    }
-                    offset += entry.NextEntryOffset as usize;
-                    if offset >= self.buffer.len() {
-                        break;
-                    }
-                }
-            }
-
-            unsafe {
-                CloseHandle(dir_handle);
+            for sd in sub_dirs {
+                pending_dirs.push_back(sd);
             }
         }
 

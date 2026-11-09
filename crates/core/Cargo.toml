@@ -11,5 +11,6 @@ bytemuck = { workspace = true, features = ["derive"] }
 hashbrown = { workspace = true }
 rustc-hash = { workspace = true }
 crossbeam-channel = { workspace = true }
+crossbeam-deque = { workspace = true }
 lru = { workspace = true }
 

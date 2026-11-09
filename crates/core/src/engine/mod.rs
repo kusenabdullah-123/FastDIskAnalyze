@@ -7,8 +7,8 @@ pub mod perakit;
 
 pub use pemindai::Pemindai;
 pub use pengendali::{
-    AkurasiTautan, HasilLengkap, HasilScan, IncompleteReason, PengendaliScan, PermintaanScan,
-    ProgressEvent,
+    AkurasiTautan, DefaultPengendaliScan, HasilLengkap, HasilScan, IncompleteReason,
+    PengendaliScan, PermintaanScan, ProgressEvent,
 };
 pub use pengawas::{CapPolicy, PengawasMemori, StatusMemori};
 pub use penghapus::{HasilPenghapusan, ModeHapus, Penghapus};

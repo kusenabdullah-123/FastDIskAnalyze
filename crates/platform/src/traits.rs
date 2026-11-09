@@ -163,9 +163,18 @@ pub trait StorageProbe: Send + Sync {
 
 /// Trait untuk melakukan enumerasi isi direktori.
 pub trait DirIterator: Send {
+    /// Membaca direktori secara rekursif.
     fn walk(
         &mut self,
         root: &Path,
+        token: &CancellationToken,
+        emit: &mut dyn FnMut(RawEntry<'_>),
+    ) -> Result<(), ScanError>;
+
+    /// Membaca hanya 1 tingkat isi sebuah direktori tanpa rekursi (untuk engine traversal paralel).
+    fn read_dir(
+        &mut self,
+        path: &Path,
         token: &CancellationToken,
         emit: &mut dyn FnMut(RawEntry<'_>),
     ) -> Result<(), ScanError>;

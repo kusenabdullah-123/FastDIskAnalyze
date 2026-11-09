@@ -19,6 +19,7 @@ bytemuck = { version = "1.21", features = ["derive"] }
 hashbrown = "0.15"
 rustc-hash = "2.1"
 crossbeam-channel = "0.5"
+crossbeam-deque = "0.8"
 lru = "0.13"
 libc = "0.2"
 windows-sys = "0.59"

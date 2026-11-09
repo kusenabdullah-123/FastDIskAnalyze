@@ -52,6 +52,16 @@ pub fn default_dir_iterator() -> Box<dyn DirIterator> {
                 token.check()?;
                 Ok(())
             }
+
+            fn read_dir(
+                &mut self,
+                _path: &std::path::Path,
+                token: &CancellationToken,
+                _emit: &mut dyn FnMut(RawEntry<'_>),
+            ) -> Result<(), ScanError> {
+                token.check()?;
+                Ok(())
+            }
         }
         Box::new(FallbackIterator)
     }
