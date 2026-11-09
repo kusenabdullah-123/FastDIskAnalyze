@@ -24,6 +24,9 @@ pub fn default_probe() -> Box<dyn StorageProbe> {
             fn probe(&self, _path: &std::path::Path) -> MediumKind {
                 MediumKind::Unknown
             }
+            fn list_drives(&self) -> Vec<InformasiDrive> {
+                Vec::new()
+            }
         }
         Box::new(FallbackProbe)
     }

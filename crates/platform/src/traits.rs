@@ -156,9 +156,43 @@ pub struct RawEntry<'a> {
     pub error: Option<EntryError>,
 }
 
+/// Informasi partisi/drive fisik atau logis yang terdeteksi.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InformasiDrive {
+    /// ID sistem atau path mount, mis. "C:\" atau "/dev/nvme0n1p2"
+    pub id: String,
+    /// Path root direktori pemindaian, mis. "C:\" atau "/" atau "/home"
+    pub mount_point: PathBuf,
+    /// Label ramah manusia, mis. "Local Disk (C:)" atau "Root Sistem (/)"
+    pub label: String,
+    /// Tipe filesystem, mis. "NTFS", "ext4", "btrfs", "exFAT"
+    pub fs_type: String,
+    /// Total kapasitas penyimpanan dalam byte
+    pub total_bytes: u64,
+    /// Kapasitas yang tersedia untuk pengguna dalam byte
+    pub available_bytes: u64,
+    /// Deteksi hardware media (NVMe, SATA SSD, HDD, Removable)
+    pub medium: MediumKind,
+}
+
+impl InformasiDrive {
+    pub fn used_bytes(&self) -> u64 {
+        self.total_bytes.saturating_sub(self.available_bytes)
+    }
+
+    pub fn usage_percentage(&self) -> f32 {
+        if self.total_bytes == 0 {
+            0.0
+        } else {
+            (self.used_bytes() as f64 / self.total_bytes as f64) as f32
+        }
+    }
+}
+
 /// Trait untuk mendeteksi tipe medium penyimpanan fisik.
 pub trait StorageProbe: Send + Sync {
     fn probe(&self, path: &Path) -> MediumKind;
+    fn list_drives(&self) -> Vec<InformasiDrive>;
 }
 
 /// Trait untuk melakukan enumerasi isi direktori.

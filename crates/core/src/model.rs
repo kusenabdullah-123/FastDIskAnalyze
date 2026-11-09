@@ -10,11 +10,17 @@ use std::sync::Arc;
 
 pub struct DisplayPath(pub String);
 
+impl std::fmt::Display for DisplayPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 pub struct PohonSistemBerkas {
     pub gudang: GudangEntri,
     pub root: IdEntri,
     pub errors: ErrorLog,
-    view_cache: ViewCache,
+    view_cache: std::sync::RwLock<ViewCache>,
 }
 
 impl PohonSistemBerkas {
@@ -23,7 +29,7 @@ impl PohonSistemBerkas {
             gudang,
             root,
             errors,
-            view_cache: ViewCache::baru(),
+            view_cache: std::sync::RwLock::new(ViewCache::baru()),
         }
     }
 
@@ -46,10 +52,28 @@ impl PohonSistemBerkas {
             .collect()
     }
 
+    pub fn adalah_direktori(&self, id: IdEntri) -> bool {
+        if (id.0 as usize) < self.gudang.jumlah() {
+            self.gudang.ambil(id).adalah_direktori()
+        } else {
+            false
+        }
+    }
+
+    pub fn jumlah_anak(&self, id: IdEntri) -> u32 {
+        if (id.0 as usize) < self.gudang.jumlah() {
+            self.gudang.ambil(id).jumlah_anak
+        } else {
+            0
+        }
+    }
+
     /// Mengambil daftar anak yang diurutkan dengan dukungan cache O(1) pada cache-hit.
-    pub fn sorted(&mut self, id: IdEntri, key: SortKey) -> Arc<[IdEntri]> {
-        if let Some(cached) = self.view_cache.sort_cache.get(&(id, key)) {
-            return cached.clone();
+    pub fn sorted(&self, id: IdEntri, key: SortKey) -> Arc<[IdEntri]> {
+        if let Ok(cache) = self.view_cache.read() {
+            if let Some(cached) = cache.sort_cache.get(&(id, key)) {
+                return cached.clone();
+            }
         }
 
         let mut ids = self.children_ids(id);
@@ -99,15 +123,19 @@ impl PohonSistemBerkas {
         }
 
         let arc: Arc<[IdEntri]> = ids.into();
-        self.view_cache.simpan_sort(id, key, arc.clone());
+        if let Ok(mut cache) = self.view_cache.write() {
+            cache.simpan_sort(id, key, arc.clone());
+        }
         arc
     }
 
     /// Pencarian substring case-insensitive langsung pada buffer byte mentah (zero heap allocation per berkas).
-    pub fn filtered(&mut self, id: IdEntri, q: &str) -> Arc<[IdEntri]> {
+    pub fn filtered(&self, id: IdEntri, q: &str) -> Arc<[IdEntri]> {
         let cache_key = (id, q.to_string());
-        if let Some(cached) = self.view_cache.filter_cache.get(&cache_key) {
-            return cached.clone();
+        if let Ok(mut cache) = self.view_cache.write() {
+            if let Some(cached) = cache.filter_cache.get(&cache_key) {
+                return cached.clone();
+            }
         }
 
         let q_bytes = q.as_bytes();
@@ -133,7 +161,9 @@ impl PohonSistemBerkas {
             .collect();
 
         let arc: Arc<[IdEntri]> = hasil.into();
-        self.view_cache.filter_cache.put(cache_key, arc.clone());
+        if let Ok(mut cache) = self.view_cache.write() {
+            cache.filter_cache.put(cache_key, arc.clone());
+        }
         arc
     }
 
@@ -243,12 +273,16 @@ impl PohonSistemBerkas {
         self.errors.untuk_entri(id)
     }
 
-    pub fn invalidasi_cache(&mut self) {
-        self.view_cache.invalidasi_semua();
+    pub fn invalidasi_cache(&self) {
+        if let Ok(mut cache) = self.view_cache.write() {
+            cache.invalidasi_semua();
+        }
     }
 
-    pub fn invalidasi_rantai_leluhur(&mut self, id: IdEntri) {
+    pub fn invalidasi_rantai_leluhur(&self, id: IdEntri) {
         let chain = self.ancestor_chain(id);
-        self.view_cache.invalidasi_banyak(&chain);
+        if let Ok(mut cache) = self.view_cache.write() {
+            cache.invalidasi_banyak(&chain);
+        }
     }
 }

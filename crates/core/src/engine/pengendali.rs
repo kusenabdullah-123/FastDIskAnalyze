@@ -1,5 +1,5 @@
 use crate::engine::pemindai::Pemindai;
-use crate::engine::pengawas::CapPolicy;
+pub use crate::engine::pengawas::CapPolicy;
 use crate::engine::penjadwal::PenjadwalScan;
 use crate::error::ErrorLog;
 use crate::gudang::GudangEntri;

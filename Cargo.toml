@@ -23,4 +23,6 @@ crossbeam-deque = "0.8"
 lru = "0.13"
 libc = "0.2"
 windows-sys = "0.59"
+iced = "0.13"
+rfd = "0.15"
 

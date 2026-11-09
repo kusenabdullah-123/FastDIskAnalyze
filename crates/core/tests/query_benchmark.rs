@@ -44,7 +44,7 @@ fn test_benchmark_1000_render_sorted_100k_entri() {
         });
     }
 
-    let mut model = PohonSistemBerkas::baru(gudang, IdEntri(0), ErrorLog::new());
+    let model = PohonSistemBerkas::baru(gudang, IdEntri(0), ErrorLog::new());
 
     // Panggilan pertama (cold sort O(K log K))
     let first_sort_start = Instant::now();
@@ -112,7 +112,7 @@ fn test_filter_zero_allocation_case_insensitive() {
         });
     }
 
-    let mut model = PohonSistemBerkas::baru(gudang, IdEntri(0), ErrorLog::new());
+    let model = PohonSistemBerkas::baru(gudang, IdEntri(0), ErrorLog::new());
 
     // Cari ".png" (harus cocok dengan .PNG dan .png)
     let matched_png = model.filtered(IdEntri(0), ".png");

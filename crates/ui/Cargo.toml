@@ -8,4 +8,7 @@ authors.workspace = true
 [dependencies]
 fast-disk-analyze-core = { path = "../core" }
 fast-disk-analyze-platform = { path = "../platform" }
+iced = { workspace = true, features = ["tokio"] }
+rfd = { workspace = true }
+crossbeam-channel = { workspace = true }
 

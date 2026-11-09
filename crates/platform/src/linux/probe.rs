@@ -1,6 +1,8 @@
-use crate::traits::{MediumKind, StorageProbe};
+use crate::traits::{InformasiDrive, MediumKind, StorageProbe};
+use std::ffi::CString;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 /// Entri mount yang diekstrak dari /proc/mounts.
@@ -217,12 +219,243 @@ impl StorageProbe for LinuxStorageProbe {
             }
         }
 
-        // 3. Fallback jika tmpfs/ramfs atau sistem berkas virtual
-        if mount_entry.fs_type == "tmpfs" || mount_entry.fs_type == "ramfs" {
-            return MediumKind::SataSsd;
+        MediumKind::Unknown
+    }
+
+    fn list_drives(&self) -> Vec<InformasiDrive> {
+        let mut drives = Vec::new();
+        let mut seen_paths: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+
+        // Helper lokal untuk query kapasitas via libc::statvfs
+        let query_statvfs = |p: &Path| -> Option<(u64, u64)> {
+            unsafe {
+                let mut stat: libc::statvfs = std::mem::zeroed();
+                let c_path = CString::new(p.as_os_str().as_bytes()).ok()?;
+                if libc::statvfs(c_path.as_ptr(), &mut stat) == 0 {
+                    let total = stat.f_blocks as u64 * stat.f_frsize as u64;
+                    let avail = stat.f_bavail as u64 * stat.f_frsize as u64;
+                    if total > 0 {
+                        Some((total, avail))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+        };
+
+        // 1. Direktori Home Pengguna (~/)
+        if let Ok(home_str) = std::env::var("HOME") {
+            let home_path = PathBuf::from(&home_str);
+            if home_path.exists() {
+                if let Some((total, avail)) = query_statvfs(&home_path) {
+                    let medium = self.probe(&home_path);
+                    drives.push(InformasiDrive {
+                        id: format!("user-home:{}", home_str),
+                        mount_point: home_path.clone(),
+                        label: "Home Pengguna (~/)".to_string(),
+                        fs_type: "home".to_string(),
+                        total_bytes: total,
+                        available_bytes: avail,
+                        medium,
+                    });
+                    seen_paths.insert(home_path);
+                }
+            }
         }
 
-        MediumKind::Unknown
+        // 2. Root Sistem (/)
+        let root_path = PathBuf::from("/");
+        if let Some((total, avail)) = query_statvfs(&root_path) {
+            let medium = self.probe(&root_path);
+            drives.push(InformasiDrive {
+                id: "/dev/root".to_string(),
+                mount_point: root_path.clone(),
+                label: "Root Sistem (/)".to_string(),
+                fs_type: "rootfs".to_string(),
+                total_bytes: total,
+                available_bytes: avail,
+                medium,
+            });
+            seen_paths.insert(root_path);
+        }
+
+        // 3. Scan /proc/mounts untuk mendeteksi semua partisi, subvolume, USB/eksternal, dan network drive
+        if let Ok(file) = File::open("/proc/mounts") {
+            let reader = BufReader::new(file);
+
+            for line in reader.lines().flatten() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() < 3 {
+                    continue;
+                }
+                let device = Self::unescape_octal(parts[0]);
+                let mount_point_str = Self::unescape_octal(parts[1]);
+                let fs_type = parts[2].to_string();
+
+                // Abaikan pseudo/virtual filesystems
+                if fs_type == "squashfs"
+                    || fs_type == "overlay"
+                    || fs_type == "tmpfs"
+                    || fs_type == "devtmpfs"
+                    || fs_type == "proc"
+                    || fs_type == "sysfs"
+                    || fs_type == "efivarfs"
+                    || fs_type == "cgroup"
+                    || fs_type == "cgroup2"
+                    || fs_type == "pstore"
+                    || fs_type == "bpf"
+                    || fs_type == "autofs"
+                    || fs_type == "mqueue"
+                    || fs_type == "hugetlbfs"
+                    || fs_type == "debugfs"
+                    || fs_type == "tracefs"
+                    || fs_type == "fusectl"
+                    || fs_type == "configfs"
+                    || fs_type == "ramfs"
+                {
+                    continue;
+                }
+
+                // Abaikan loop devices (snap package mounts)
+                if device.starts_with("/dev/loop") {
+                    continue;
+                }
+
+                // Abaikan container / docker / containerd / flatpak / snap internals
+                if mount_point_str.starts_with("/var/lib/docker")
+                    || mount_point_str.starts_with("/var/lib/containerd")
+                    || mount_point_str.starts_with("/var/lib/flatpak")
+                    || mount_point_str.starts_with("/snap")
+                {
+                    continue;
+                }
+
+                // Abaikan mount internal sistem yang bukan target pemindaian umum pengguna
+                if mount_point_str == "/boot/efi"
+                    || mount_point_str.ends_with("/efi")
+                    || mount_point_str == "/boot"
+                    || mount_point_str == "/etc"
+                    || mount_point_str == "/bin"
+                    || mount_point_str == "/sbin"
+                    || mount_point_str == "/lib"
+                    || mount_point_str == "/lib64"
+                    || mount_point_str == "/usr"
+                    || mount_point_str == "/var"
+                    || mount_point_str.starts_with("/var/")
+                    || mount_point_str.starts_with("/dev/shm")
+                    || mount_point_str == "/tmp"
+                    || mount_point_str.starts_with("/proc")
+                    || mount_point_str.starts_with("/sys")
+                    || mount_point_str.starts_with("/dev")
+                    || (mount_point_str.starts_with("/run") && !mount_point_str.starts_with("/run/media"))
+                {
+                    continue;
+                }
+
+                let mount_point = PathBuf::from(&mount_point_str);
+
+                // Abaikan mount yang berada di dalam Home pengguna (sudah tercakup dalam Home Pengguna)
+                if let Ok(ref home_str) = std::env::var("HOME") {
+                    let home_path = Path::new(home_str);
+                    if mount_point != home_path && mount_point.starts_with(home_path) {
+                        continue;
+                    }
+                }
+
+                // Jika ini adalah mount untuk root (/), perbarui ID device dan tipe fs riil
+                if mount_point == Path::new("/") {
+                    if let Some(r) = drives.iter_mut().find(|d| d.mount_point == Path::new("/")) {
+                        r.id = device.clone();
+                        r.fs_type = fs_type.clone();
+                    }
+                    continue;
+                }
+
+                if seen_paths.contains(&mount_point) {
+                    continue;
+                }
+
+                let (total_bytes, available_bytes) = match query_statvfs(&mount_point) {
+                    Some(res) => res,
+                    None => continue,
+                };
+
+                let medium = self.probe(&mount_point);
+
+                let label = if mount_point == Path::new("/home") {
+                    "Partisi Home (/home)".to_string()
+                } else if mount_point.starts_with("/media")
+                    || mount_point.starts_with("/run/media")
+                    || mount_point.starts_with("/mnt")
+                {
+                    let folder_name = mount_point
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "Eksternal".to_string());
+                    format!("Drive Eksternal ({folder_name})")
+                } else {
+                    format!("Partisi ({})", mount_point.display())
+                };
+
+                drives.push(InformasiDrive {
+                    id: device,
+                    mount_point: mount_point.clone(),
+                    label,
+                    fs_type,
+                    total_bytes,
+                    available_bytes,
+                    medium,
+                });
+                seen_paths.insert(mount_point);
+            }
+        }
+
+        // 4. Direktori Kerja Saat Ini (.) jika belum ada di dalam daftar
+        if let Ok(cwd) = std::env::current_dir() {
+            if !seen_paths.contains(&cwd) {
+                if let Some((total, avail)) = query_statvfs(&cwd) {
+                    let medium = self.probe(&cwd);
+                    let folder_name = cwd
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "Proyek".to_string());
+                    drives.push(InformasiDrive {
+                        id: format!("cwd:{}", cwd.display()),
+                        mount_point: cwd.clone(),
+                        label: format!("Direktori Kerja ({folder_name})"),
+                        fs_type: "directory".to_string(),
+                        total_bytes: total,
+                        available_bytes: avail,
+                        medium,
+                    });
+                    seen_paths.insert(cwd);
+                }
+            }
+        }
+
+        // Urutkan prioritas: Home Pengguna (~/) -> Root Sistem (/) -> /home -> Direktori Kerja -> Mount Lainnya
+        drives.sort_by(|a, b| {
+            let priority = |d: &InformasiDrive| -> u8 {
+                if d.label.starts_with("Home Pengguna") {
+                    0
+                } else if d.mount_point == Path::new("/") {
+                    1
+                } else if d.mount_point == Path::new("/home") {
+                    2
+                } else if d.label.starts_with("Direktori Kerja") {
+                    3
+                } else {
+                    4
+                }
+            };
+            priority(a)
+                .cmp(&priority(b))
+                .then_with(|| a.mount_point.cmp(&b.mount_point))
+        });
+
+        drives
     }
 }
 
@@ -266,5 +499,24 @@ mod tests {
         assert!(LinuxStorageProbe::is_network_fs("cifs", "//192.168.1.1/share"));
         assert!(!LinuxStorageProbe::is_network_fs("ext4", "/dev/sda1"));
         assert!(!LinuxStorageProbe::is_network_fs("btrfs", "/dev/nvme0n1p2"));
+    }
+
+    #[test]
+    fn test_list_drives_real_system() {
+        let probe = LinuxStorageProbe::new();
+        let drives = probe.list_drives();
+        println!("Ditemukan {} drive pada sistem ini:", drives.len());
+        for d in &drives {
+            println!("  - {} [{}] {} (Total: {} GB, Bebas: {} GB, Media: {:?})",
+                d.label, d.fs_type, d.mount_point.display(),
+                d.total_bytes / (1024 * 1024 * 1024),
+                d.available_bytes / (1024 * 1024 * 1024),
+                d.medium
+            );
+        }
+        assert!(!drives.is_empty(), "Harus ada minimal satu drive terdeteksi pada Linux");
+        assert!(drives.iter().any(|d| d.mount_point == Path::new("/")), "Drive root / harus ada");
+        let root_drive = drives.iter().find(|d| d.mount_point == Path::new("/")).unwrap();
+        assert!(root_drive.total_bytes > 0, "Kapasitas root harus lebih dari 0");
     }
 }

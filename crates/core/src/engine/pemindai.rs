@@ -203,11 +203,17 @@ impl Pemindai {
                             _padding: 0,
                         };
 
+                        let delta_bytes = if raw.ukuran_blok > 0 {
+                            raw.ukuran_blok
+                        } else {
+                            raw.ukuran_asli
+                        };
+
                         local_gudang.tambah_entri(rekaman);
                         local_items += 1;
-                        local_bytes += raw.ukuran_asli;
+                        local_bytes += delta_bytes;
                         g_items.fetch_add(1, Ordering::Relaxed);
-                        g_bytes.fetch_add(raw.ukuran_asli, Ordering::Relaxed);
+                        g_bytes.fetch_add(delta_bytes, Ordering::Relaxed);
 
                         if let Some(id_berkas) = raw.identitas {
                             local_tautan.push((local_idx, id_berkas));

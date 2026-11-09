@@ -139,7 +139,7 @@ fn main() {
         return;
     }
 
-    let mut model = model_hasil.unwrap();
+    let model = model_hasil.unwrap();
     let total_entri = model.gudang.jumlah();
     let root_node = *model.gudang.ambil(model.root);
 
